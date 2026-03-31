@@ -6,7 +6,7 @@
 
 ## 🎯 Pourquoi ce projet ?
 
-Les données sont **relationnelles**, les calculs doivent être **temps réel**, et l'affichage doit être **réactif**. C'est l'environnement idéal pour tester et valider des choix d'architecture front-end non triviaux.
+Les données sont **relationnelles**, les calculs doivent être **temps réel**, et l'affichage doit être **réactif**. C'est l'environnement idéal pour valider des choix d'architecture front-end concrets, proches de ce qu'on fait en production.
 
 ---
 
@@ -21,97 +21,97 @@ Une **Single Page Application (SPA)** où l'utilisateur peut :
 
 ---
 
-## 🏗️ Les Défis Architecturaux
-
-> C'est là que le projet devient "profond". Coder ça "comme un junior" (tout dans un gros state React, des `useEffect` imbriqués) donne une app qui lag dès 100 transactions. Voici les choix à trancher.
-
-### Défi A — Gestion d'état (State Management)
-
-**Le problème :** Quand une transaction est modifiée, il faut mettre à jour simultanément le solde du compte, le budget de la catégorie, et le graphique du dashboard — trois endroits distincts.
-
-**Le choix architectural :**
-| Option | Approche |
-|---|---|
-| `Redux` | Classique, verbeux, éprouvé |
-| `Zustand` | Moderne, léger, pragmatique |
-| `RxJS` | Event-Driven, puissant, complexe |
-| `useReducer` (React pur) | Minimaliste, sans dépendance |
-
----
-
-### Défi B — Séparation logique métier / UI (Separation of Concerns)
-
-**Le problème :** Le calcul du solde ne doit **pas** vivre dans le composant `<BankCard />`.
-
-**Le choix architectural :** Créer une couche **Domain Layer** explicite.
-- Les composants UI n'affichent que des données (dumb components)
-- Un `AccountService` ou des hooks personnalisés avancés portent la logique
-- Objectif : **tester la logique de calcul sans lancer le navigateur**
-
----
-
-### Défi C — Performance et Listes Virtuelles
-
-**Le problème :** 5 000 transactions sur 3 ans = DOM explosé si on affiche tout.
-
-**Le choix architectural :**
-- Implémenter du **Windowing** (n'afficher que les ~20 éléments visibles)
-- Ou de la **pagination intelligente côté client**
-- Force à penser l'architecture des données dès le départ
-
----
-
-### Défi D — Persistance et Mode Offline
-
-**Le problème :** C'est un POC, mais il faut que ça fonctionne.
-
-**Le choix architectural :**
-| Option | Trade-off |
-|---|---|
-| `localStorage` (brut) | Simple, limité (~5MB), synchrone |
-| `IndexedDB` via `Dexie.js` | Robuste, asynchrone, scalable |
-
----
-
-## 📁 Structure de Dossiers (Clean Architecture)
+## 📁 Structure
 
 ```
-/src
-  /domain           # Types, interfaces, règles de calcul — pur TS, zéro React
-  /infrastructure   # Couche stockage (LocalStorage, API mock, IndexedDB)
-  /application      # Services d'orchestration, State management
-  /ui               # Composants React "bêtes" — reçoivent des props, c'est tout
+src/
+  pages/            # Entrypoints de l'app — un fichier par route
+  ui/
+    components/     # Boutons, inputs — vraiment génériques
+    accounts/       # Domains métiers de l'application
+    transactions/
+    dashboard/
+  domain/           # Types et fonctions pures — zéro React, zéro import externe
+  infrastructure/   # Accès à IndexedDB via Dexie
 ```
 
-> **Règle d'or :** `/domain` et `/application` ne doivent jamais importer quoi que ce soit de `/ui`.
+### La règle qui ne change pas
+
+`domain/` n'importe rien d'autre. Tout le reste peut dépendre de `domain/`, jamais l'inverse.
 
 ---
 
-## ❓ Questions Architecturales à Trancher
+## 🏗️ Choix Architecturaux
 
-Ces décisions constituent le vrai **cahier des charges** du POC :
+### Persistance — Dexie.js (IndexedDB)
 
-1. **Unidirectional Data Flow**
-   Comment garantir un état prévisible ? → Pattern Flux, Redux DevTools, immer…
+Dexie est la source de vérité unique. Il n'y a pas de store global, pas de Context — **la base de données est le store**.
 
-2. **Dependency Injection**
-   Comment injecter le service de stockage sans coupler les composants ? → Context API vs hooks personnalisés
+Le super-pouvoir de Dexie ici : `useLiveQuery`. N'importe quelle écriture en base notifie automatiquement tous les hooks qui observent ces données. Pas d'invalidation manuelle de cache.
 
-3. **Testing Strategy**
-   Comment tester que `+50€ sur une transaction` → `+50€ sur le solde du compte`, sans monter le DOM ?
+```ts
+// hooks/useAccounts.ts
+export function useAccounts() {
+  const accounts = useLiveQuery(() => db.accounts.toArray())
+  const transactions = useLiveQuery(() => db.transactions.toArray())
+
+  return accounts?.map(a => ({
+    ...a,
+    balance: getAccountBalance(a, transactions ?? []) // ← domain/
+  }))
+}
+```
+
+### Flux de données
+
+Chaque hook est autonome et lit directement depuis `infrastructure/`. Le Dashboard ne réutilise pas l'état d'un autre composant — il lit ce dont il a besoin lui-même.
+
+```
+infrastructure/ (Dexie)
+       ↑
+   hooks/              useAccounts()  useTransactions()  useDashboard()
+       ↑
+   ui/components       reçoit des props — aucune logique
+```
+
+Pourquoi pas un Context global ? Un Context qui agrège tout devient un **God Context** : il sait trop de choses, crée du couplage, et force des re-renders inutiles. Chaque hook est responsable de ses données.
+
+### Logique métier — Domain layer
+
+Tout ce qui calcule vit dans `domain/` : fonctions pures, zéro React, 100% testables sans navigateur.
+
+```ts
+// domain/calculations.ts
+getAccountBalance(account, transactions[]) → number
+getTotalBalance(accounts[], transactions[]) → number
+getTransactionsByMonth(transactions[])     → Record<string, Transaction[]>
+filterTransactions(transactions[], filters) → Transaction[]
+```
+
+---
+
+## ❓ Questions tranchées
+
+| Question | Décision |
+|---|---|
+| State management | Aucun store global — Dexie est la source de vérité |
+| Synchro entre hooks | `useLiveQuery` — automatique à chaque écriture |
+| Logique de calcul | Fonctions pures dans `domain/`, appelées depuis les hooks |
+| Context API | Réservé si besoin d'un état vraiment global (thème, user) |
+| Testing | Les fonctions `domain/` se testent en pur Node — sans DOM |
 
 ---
 
 ## 🚀 Plan d'Attaque
 
-> **Ne pas chercher à faire joli.** CSS minimal. L'objectif est la **structure des dossiers** et la **clarté des flux de données**.
-
-- [ ] Modéliser le domaine (`Account`, `Transaction`, `Category`) en TypeScript pur
-- [ ] Implémenter la couche `infrastructure` (persistence)  
-- [ ] Choisir et câbler la solution de State Management
-- [ ] Brancher les composants UI sur l'état applicatif
-- [ ] Ajouter les cas limites : annulation, filtres, tri
-- [ ] Mesurer les perfs et introduire le Windowing si nécessaire
+- [ ] Figer les 3 écrans et lister les données affichées (avant d'écrire une ligne)
+- [ ] Modéliser les types dans `domain/types.ts`
+- [ ] Écrire les fonctions de calcul dans `domain/calculations.ts` + tests
+- [ ] Mettre en place Dexie dans `infrastructure/`
+- [ ] Générer un jeu de données seed réaliste
+- [ ] Implémenter les hooks dans `hooks/`
+- [ ] Brancher les composants UI
+- [ ] Filtres, tri, annulation de la dernière action
 
 ---
 
@@ -119,12 +119,11 @@ Ces décisions constituent le vrai **cahier des charges** du POC :
 
 > Simple à définir, **infini à perfectionner**.
 
-Ce projet peut évoluer pendant des années pour tester de nouveaux patterns :
-- React Signals
-- Server Components
-- Micro-frontends
-- Observable stores
-- …
+La structure est conçue pour accueillir de nouveaux patterns sans réécriture :
+- Remplacer Dexie par une vraie API (sans toucher aux hooks ni aux composants)
+- Ajouter React Query si un backend apparaît
+- Tester les React Signals comme alternative aux hooks de lecture
+- Introduire du Windowing sur la liste des transactions
 
 ---
 
